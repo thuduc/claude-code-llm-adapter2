@@ -18,6 +18,7 @@ from .mapping import (
     map_system_to_bedrock,
     map_tool_choice,
     map_tools_to_bedrock,
+    from_bedrock_tool_result_content,
     MappingError,
 )
 from .sse import sse
@@ -29,7 +30,7 @@ app = FastAPI(title="Claude Code → Bedrock Proxy", version="0.1.0")
 # ---- Logging setup ----
 logger = logging.getLogger("proxy")
 if not logger.handlers:
-    logger.setLevel(logging.INFO)
+    logger.setLevel(logging.DEBUG)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     sh = logging.StreamHandler()
     sh.setFormatter(fmt)
@@ -137,7 +138,7 @@ def _build_bedrock_args(body: Dict[str, Any]) -> Dict[str, Any]:
     }
     logger.debug(
         "Built Bedrock args: %s",
-        json.dumps(_sanitize_for_log({**args, "messages": body.get("messages")}), ensure_ascii=False),
+        json.dumps(_sanitize_for_log(args), ensure_ascii=False),
     )
     return args
 
@@ -278,41 +279,48 @@ def _streaming_response(client, body: Dict[str, Any], args: Dict[str, Any]) -> S
                         index = cbs.get("index", 0)
                         start = cbs.get("start") or cbs.get("contentBlock") or {}
                         if "text" in start:
+                            text_value = start.get("text")
+                            if isinstance(text_value, dict):
+                                text_value = text_value.get("text", "")
+                            payload = {"type": "text", "text": text_value or ""}
                             line = sse(
                                 "content_block_start",
-                                {"index": index, "content_block": {"type": "text", "text": ""}},
+                                {"index": index, "content_block": payload},
                             )
                             logger.debug("SSE> %s", line.strip())
                             yield line
                         elif "toolUse" in start:
                             tu = start.get("toolUse", {})
+                            payload = {
+                                "type": "tool_use",
+                                "id": tu.get("toolUseId"),
+                                "name": tu.get("name"),
+                                "input": tu.get("input") or {},
+                            }
                             line = sse(
                                 "content_block_start",
-                                {
-                                    "index": index,
-                                    "content_block": {
-                                        "type": "tool_use",
-                                        "id": tu.get("toolUseId"),
-                                        "name": tu.get("name"),
-                                        "input": {},
-                                    },
-                                },
+                                {"index": index, "content_block": payload},
                             )
                             logger.debug("SSE> %s", line.strip())
                             yield line
                         elif "toolResult" in start:
                             tr = start.get("toolResult", {})
+                            content_field = tr.get("content")
+                            if isinstance(content_field, list):
+                                mapped_content = from_bedrock_tool_result_content(content_field)
+                            elif content_field is None:
+                                mapped_content = ""
+                            else:
+                                mapped_content = content_field
+                            payload = {
+                                "type": "tool_result",
+                                "tool_use_id": tr.get("toolUseId"),
+                                "is_error": (tr.get("status") == "error"),
+                                "content": mapped_content,
+                            }
                             line = sse(
                                 "content_block_start",
-                                {
-                                    "index": index,
-                                    "content_block": {
-                                        "type": "tool_result",
-                                        "tool_use_id": tr.get("toolUseId"),
-                                        "is_error": (tr.get("status") == "error"),
-                                        "content": "",
-                                    },
-                                },
+                                {"index": index, "content_block": payload},
                             )
                             logger.debug("SSE> %s", line.strip())
                             yield line

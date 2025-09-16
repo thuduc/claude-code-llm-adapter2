@@ -44,8 +44,8 @@ async def test_stream_text_flow():
     # Simulate a simple text generation sequence
     events = [
         {"messageStart": {"model": "anthropic.claude"}},
-        {"contentBlockStart": {"index": 0, "start": {"text": ""}}},
-        {"contentBlockDelta": {"index": 0, "delta": {"text": "Hello"}}},
+        {"contentBlockStart": {"index": 0, "start": {"text": "Hel"}}},
+        {"contentBlockDelta": {"index": 0, "delta": {"text": "lo"}}},
         {"contentBlockStop": {"index": 0}},
         {"metadata": {"usage": {"inputTokens": 3, "outputTokens": 5}}},
         {"messageStop": {"stopReason": "end_turn"}},
@@ -60,7 +60,8 @@ async def test_stream_text_flow():
     payload = await _collect_stream_text(resp)
     assert "event: message_start" in payload
     assert "event: content_block_start" in payload
-    assert "text\":\"Hello\"" in payload
+    assert "\"content_block\":{\"type\":\"text\",\"text\":\"Hel\"}" in payload
+    assert "\"text\":\"lo\"" in payload
     assert "event: content_block_stop" in payload
     assert "event: message_delta" in payload
     assert "\"stop_reason\":\"end_turn\"" in payload
@@ -72,7 +73,14 @@ async def test_stream_text_flow():
 async def test_stream_tool_use_flow():
     # Simulate a tool_use block with partial JSON input
     events = [
-        {"contentBlockStart": {"index": 0, "start": {"toolUse": {"toolUseId": "tu1", "name": "fs"}}}},
+        {
+            "contentBlockStart": {
+                "index": 0,
+                "start": {
+                    "toolUse": {"toolUseId": "tu1", "name": "fs", "input": {"query": "status"}}
+                },
+            }
+        },
         {"contentBlockDelta": {"index": 0, "delta": {"toolUse": {"input": {"partialJson": "{\"path\": \"/tmp\"}"}}}}},
         {"contentBlockStop": {"index": 0}},
         {"messageStop": {"stopReason": "tool_use"}},
@@ -87,6 +95,7 @@ async def test_stream_tool_use_flow():
     payload = await _collect_stream_text(resp)
     assert "event: content_block_start" in payload
     assert "\"type\":\"tool_use\"" in payload
+    assert "\"input\":{\"query\":\"status\"}" in payload
     assert "event: content_block_delta" in payload
     assert "input_json_delta" in payload
     assert "event: content_block_stop" in payload
@@ -97,7 +106,18 @@ async def test_stream_tool_use_flow():
 async def test_stream_tool_result_flow():
     # Simulate an unusual provider emission of toolResult in assistant stream
     events = [
-        {"contentBlockStart": {"index": 0, "start": {"toolResult": {"toolUseId": "tu1", "status": "success"}}}},
+        {
+            "contentBlockStart": {
+                "index": 0,
+                "start": {
+                    "toolResult": {
+                        "toolUseId": "tu1",
+                        "status": "success",
+                        "content": [{"text": "prefetch"}],
+                    }
+                },
+            }
+        },
         {"contentBlockDelta": {"index": 0, "delta": {"toolResult": {"content": {"partialJson": "{\"ok\":true}"}}}}},
         {"contentBlockStop": {"index": 0}},
         {"messageStop": {"stopReason": "end_turn"}},
@@ -113,6 +133,7 @@ async def test_stream_tool_result_flow():
     assert "event: content_block_start" in payload
     assert "\"type\":\"tool_result\"" in payload
     assert "\"tool_use_id\":\"tu1\"" in payload
+    assert "prefetch" in payload
     assert "event: content_block_delta" in payload
     # Verify we used output_json_delta to represent tool_result JSON partials
     assert "output_json_delta" in payload
@@ -126,15 +147,37 @@ async def test_stream_tool_result_flow():
 async def test_stream_mixed_blocks_flow():
     # Mixed response: text → tool_use → tool_result with usage and end_turn
     events = [
-        {"contentBlockStart": {"index": 0, "start": {"text": ""}}},
+        {"contentBlockStart": {"index": 0, "start": {"text": "Step "}}},
         {"contentBlockDelta": {"index": 0, "delta": {"text": "Step 1"}}},
         {"contentBlockStop": {"index": 0}},
 
-        {"contentBlockStart": {"index": 1, "start": {"toolUse": {"toolUseId": "tu1", "name": "fs"}}}},
+        {
+            "contentBlockStart": {
+                "index": 1,
+                "start": {
+                    "toolUse": {
+                        "toolUseId": "tu1",
+                        "name": "fs",
+                        "input": {"path": "/tmp/test.txt", "prefetched": True},
+                    }
+                },
+            }
+        },
         {"contentBlockDelta": {"index": 1, "delta": {"toolUse": {"input": {"partialJson": "{\"path\":\"/tmp/test.txt\"}"}}}}},
         {"contentBlockStop": {"index": 1}},
 
-        {"contentBlockStart": {"index": 2, "start": {"toolResult": {"toolUseId": "tu1", "status": "success"}}}},
+        {
+            "contentBlockStart": {
+                "index": 2,
+                "start": {
+                    "toolResult": {
+                        "toolUseId": "tu1",
+                        "status": "success",
+                        "content": [{"text": "prefetch-data"}],
+                    }
+                },
+            }
+        },
         {"contentBlockDelta": {"index": 2, "delta": {"toolResult": {"content": {"partialJson": "{\"data\":\"ok\"}"}}}}},
         {"contentBlockStop": {"index": 2}},
 
@@ -155,12 +198,13 @@ async def test_stream_mixed_blocks_flow():
     assert payload.count("event: content_block_stop") == 3
 
     # Text delta present
-    assert "\"type\":\"text\"" in payload
+    assert "\"content_block\":{\"type\":\"text\",\"text\":\"Step \"}" in payload
     assert "\"type\":\"text_delta\"" in payload
     assert "Step 1" in payload
 
     # Tool use and tool result present with their deltas
     assert "\"type\":\"tool_use\"" in payload
+    assert "\"input\":{\"path\":\"/tmp/test.txt\",\"prefetched\":true}" in payload
     assert "input_json_delta" in payload
     assert "/tmp/test.txt" in payload
 
@@ -168,6 +212,7 @@ async def test_stream_mixed_blocks_flow():
     assert "output_json_delta" in payload
     # escaped raw JSON inside JSON string
     assert "\\\"data\\\":\\\"ok\\\"" in payload
+    assert "prefetch-data" in payload
 
     # Usage and stop reason emitted in message_delta
     assert "\"usage\":{\"input_tokens\":7,\"output_tokens\":11}" in payload

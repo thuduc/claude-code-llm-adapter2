@@ -62,17 +62,18 @@ def map_model_id(requested_model: str) -> str:
     m = get_settings().model_id_map.get(requested_model)
     if m:
         return m
-    else:
-        if "sonnet" in requested_model:
-            return "us.anthropic.claude-sonnet-4-20250514-v1:0"
-        elif "haiku" in requested_model:
-            return "us.anthropic.claude-sonnet-4-20250514-v1:0"
-        elif "opus" in requested_model:
-            return "us.anthropic.claude-opus-4-20250514-v1:0"
-        else:
-            # fail with guidance
-            raise ValueError(
-                "Unknown model name '{model}'. Configure MODEL_ID_MAP_JSON to map it to a Bedrock modelId (e.g., 'anthropic.claude-3-5-sonnet-20240620-v1:0').".format(
-                    model=requested_model
-                )
-            )
+
+    normalized = requested_model.lower()
+    if "sonnet" in normalized:
+        return "us.anthropic.claude-sonnet-4-20250514-v1:0"
+    if "haiku" in normalized:
+        # Default to Claude 3 Haiku unless operator overrides via MODEL_ID_MAP_JSON
+        return "anthropic.claude-3-haiku-20240307-v1:0"
+    if "opus" in normalized:
+        return "us.anthropic.claude-opus-4-20250514-v1:0"
+
+    raise ValueError(
+        "Unknown model name '{model}'. Configure MODEL_ID_MAP_JSON to map it to a Bedrock modelId (e.g., 'anthropic.claude-3-5-sonnet-20240620-v1:0').".format(
+            model=requested_model
+        )
+    )
