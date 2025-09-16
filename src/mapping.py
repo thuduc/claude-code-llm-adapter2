@@ -292,9 +292,14 @@ def map_messages_to_bedrock(anthropic_messages: List[Dict[str, Any]], allow_imag
                 block = {"image": to_bedrock_image(part, allow_image_url)}
                 other_entries.append((idx, block))
             elif t == "document":
-                has_document = True
-                block = {"document": to_bedrock_document(part, allow_image_url)}
-                other_entries.append((idx, block))
+                document_payload = to_bedrock_document(part, allow_image_url)
+                if tool_result_entries and tool_result_entries[-1][0] <= idx:
+                    _, tr_block, _ = tool_result_entries[-1]
+                    tr_content = tr_block["toolResult"].setdefault("content", [])
+                    tr_content.append({"json": {"document": document_payload}})
+                else:
+                    has_document = True
+                    other_entries.append((idx, {"document": document_payload}))
             elif t == "tool_use":
                 tool_use_id = part.get("id")
                 if tool_use_id:
@@ -345,24 +350,30 @@ def map_messages_to_bedrock(anthropic_messages: List[Dict[str, Any]], allow_imag
                     break
             content_blocks.insert(insert_index, placeholder)
 
-        out.append({"role": role, "content": content_blocks})
+        emitted_messages: List[Dict[str, Any]] = []
+        if role == "user" and ordered_tool_results and pending_tool_use_ids:
+            for block in ordered_tool_results:
+                emitted_messages.append({"role": role, "content": [block]})
+            remaining = content_blocks[len(ordered_tool_results):]
+            if remaining:
+                emitted_messages.append({"role": role, "content": remaining})
+        else:
+            emitted_messages.append({"role": role, "content": content_blocks})
+
+        out.extend(emitted_messages)
 
         if role == "assistant":
             pending_tool_use_ids.extend(tool_use_ids_in_message)
         else:
-            tool_result_ids: List[str] = [
-                (block.get("toolResult") or {}).get("toolUseId")
-                for block in content_blocks
-                if "toolResult" in block
-            ]
+            for emitted in emitted_messages:
+                tool_result_ids = [
+                    (block.get("toolResult") or {}).get("toolUseId")
+                    for block in emitted.get("content", [])
+                    if "toolResult" in block
+                ]
 
-            if pending_tool_use_ids:
                 if not tool_result_ids:
-                    raise MappingError(
-                        "tool_result required for tool_use ids: {ids}".format(
-                            ids=", ".join(pending_tool_use_ids)
-                        )
-                    )
+                    continue
 
                 for tool_result_id in tool_result_ids:
                     if not tool_result_id:
@@ -372,12 +383,15 @@ def map_messages_to_bedrock(anthropic_messages: List[Dict[str, Any]], allow_imag
                     elif tool_result_id in pending_tool_use_ids:
                         pending_tool_use_ids.remove(tool_result_id)
 
-                if pending_tool_use_ids:
-                    raise MappingError(
-                        "tool_result required for tool_use ids: {ids}".format(
-                            ids=", ".join(pending_tool_use_ids)
-                        )
+                if not pending_tool_use_ids:
+                    continue
+
+            if pending_tool_use_ids:
+                raise MappingError(
+                    "tool_result required for tool_use ids: {ids}".format(
+                        ids=", ".join(pending_tool_use_ids)
                     )
+                )
 
     # CRITICAL FIX: Pre-process all messages to split mixed content BEFORE any validation
     # BUT NEVER split user messages (always creates consecutive users - Bedrock rejects this)

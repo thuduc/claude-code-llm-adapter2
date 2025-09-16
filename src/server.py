@@ -30,7 +30,7 @@ app = FastAPI(title="Claude Code → Bedrock Proxy", version="0.1.0")
 # ---- Logging setup ----
 logger = logging.getLogger("proxy")
 if not logger.handlers:
-    logger.setLevel(logging.DEBUG)
+    logger.setLevel(logging.INFO)
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     sh = logging.StreamHandler()
     sh.setFormatter(fmt)

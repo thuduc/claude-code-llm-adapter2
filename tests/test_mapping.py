@@ -95,6 +95,69 @@ def test_map_messages_tool_use_and_result():
     assert tr["content"][0]["text"] == "file content"
 
 
+def test_tool_result_with_attachment_splits_message():
+    pdf_data = base64.b64encode(b"%PDF-1.7\n...").decode()
+    msgs = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "read1", "name": "Read", "input": {"file_path": "whitepaper.pdf"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "read1", "content": "OK"},
+                {"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": pdf_data}},
+            ],
+        },
+    ]
+
+    out = map_messages_to_bedrock(msgs, allow_image_url=False)
+    assert len(out) == 2
+    assert out[1]["role"] == "user"
+    tr = out[1]["content"][0]["toolResult"]
+    assert tr["toolUseId"] == "read1"
+    embedded = [c for c in tr.get("content", []) if "json" in c and "document" in c["json"]]
+    assert embedded and embedded[0]["json"]["document"]["format"] == "pdf"
+
+
+def test_multiple_tool_results_split_and_ordered():
+    msgs = [
+        {
+            "role": "assistant",
+            "content": [
+                {"type": "tool_use", "id": "todo1", "name": "TodoWrite", "input": {"todos": []}},
+                {"type": "tool_use", "id": "read1", "name": "Read", "input": {"file_path": "whitepaper.pdf"}},
+            ],
+        },
+        {
+            "role": "user",
+            "content": [
+                {"type": "tool_result", "tool_use_id": "todo1", "content": "ok"},
+                {"type": "tool_result", "tool_use_id": "read1", "content": "pdf ok"},
+                {
+                    "type": "document",
+                    "source": {
+                        "type": "base64",
+                        "media_type": "application/pdf",
+                        "data": base64.b64encode(b"%PDF-1.7\n...").decode(),
+                    },
+                },
+            ],
+        },
+    ]
+
+    out = map_messages_to_bedrock(msgs, allow_image_url=False)
+    assert len(out) == 3
+    first = out[1]["content"][0]["toolResult"]
+    second = out[2]["content"][0]["toolResult"]
+    assert first["toolUseId"] == "todo1"
+    assert second["toolUseId"] == "read1"
+    embedded = [c for c in second.get("content", []) if "json" in c and "document" in c["json"]]
+    assert embedded
+
+
 def test_map_messages_missing_tool_result_raises():
     msgs = [
         {
@@ -270,9 +333,10 @@ def test_map_document_with_tool_result_no_padding():
         }
     ]
     out = map_messages_to_bedrock(msgs, allow_image_url=False)
-    assert out[0]["content"][0]["toolResult"]["toolUseId"] == "tool-123"
-    assert out[0]["content"][1] == {"text": "Document attached."}
-    assert out[0]["content"][2]["document"]["name"].startswith("document")
+    tr = out[0]["content"][0]["toolResult"]
+    assert tr["toolUseId"] == "tool-123"
+    embedded = [c for c in tr.get("content", []) if "json" in c and "document" in c["json"]]
+    assert embedded and embedded[0]["json"]["document"]["format"].startswith("pdf")
 
 
 def test_tool_result_reordered_before_other_blocks():
